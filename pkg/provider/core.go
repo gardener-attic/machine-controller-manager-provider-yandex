@@ -19,11 +19,31 @@ package provider
 
 import (
 	"context"
+	"fmt"
+	"reflect"
+	"regexp"
+	"strings"
+	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/gogo/protobuf/proto"
+	ycsdk "github.com/yandex-cloud/go-sdk"
+	ycsdkoperation "github.com/yandex-cloud/go-sdk/operation"
+
+	api "github.com/flant/machine-controller-manager-provider-yandex/pkg/provider/apis"
+	"github.com/yandex-cloud/go-genproto/yandex/cloud/compute/v1"
+	"github.com/yandex-cloud/go-genproto/yandex/cloud/operation"
 
 	"github.com/gardener/machine-controller-manager/pkg/util/provider/driver"
-	"github.com/gardener/machine-controller-manager/pkg/util/provider/machinecodes/codes"
-	"github.com/gardener/machine-controller-manager/pkg/util/provider/machinecodes/status"
+	mcmcodes "github.com/gardener/machine-controller-manager/pkg/util/provider/machinecodes/codes"
+	mcmstatus "github.com/gardener/machine-controller-manager/pkg/util/provider/machinecodes/status"
 	"k8s.io/klog"
+)
+
+const (
+	apiTimeout = 10 * time.Minute
 )
 
 // NOTE
@@ -62,7 +82,101 @@ func (p *Provider) CreateMachine(ctx context.Context, req *driver.CreateMachineR
 	klog.V(2).Infof("Machine creation request has been recieved for %q", req.Machine.Name)
 	defer klog.V(2).Infof("Machine creation request has been processed for %q", req.Machine.Name)
 
-	return &driver.CreateMachineResponse{}, status.Error(codes.Unimplemented, "")
+	var (
+		machine      = req.Machine
+		secret       = req.Secret
+		machineClass = req.MachineClass
+	)
+
+	ctx, cancelFunc := context.WithTimeout(context.Background(), apiTimeout)
+	defer cancelFunc()
+
+	ySDK, err := p.YandexSDK.GetSession(ctx, secret)
+	if err != nil {
+		return nil, mcmstatus.Error(mcmcodes.Internal, err.Error())
+	}
+
+	spec, err := unmarshalYandexProviderSpec(machineClass)
+	if err != nil {
+		return nil, mcmstatus.Error(mcmcodes.InvalidArgument, err.Error())
+	}
+
+	var instanceMetadata = make(map[string]string)
+	if spec.Metadata != nil {
+		instanceMetadata = spec.Metadata
+	}
+
+	userData, exists := secret.Data["userData"]
+	if !exists {
+		return nil, mcmstatus.Error(mcmcodes.InvalidArgument, "userData doesn't exist")
+	}
+	instanceMetadata["user-data"] = string(userData)
+
+	var networkInterfaceSpecs []*compute.NetworkInterfaceSpec
+	for _, netIf := range spec.NetworkInterfaceSpecs {
+		var natSpec *compute.OneToOneNatSpec
+		if netIf.AssignPublicIPAddress {
+			natSpec = &compute.OneToOneNatSpec{
+				IpVersion: compute.IpVersion_IPV4,
+			}
+		}
+
+		var externalIPv4Address = &compute.PrimaryAddressSpec{
+			OneToOneNatSpec: natSpec,
+		}
+
+		networkInterfaceSpecs = append(networkInterfaceSpecs, &compute.NetworkInterfaceSpec{
+			SubnetId:             netIf.SubnetID,
+			PrimaryV4AddressSpec: externalIPv4Address,
+		})
+	}
+
+	createInstanceParams := &compute.CreateInstanceRequest{
+		FolderId:   string(secret.Data[api.YandexFolderID]),
+		Name:       machine.Name,
+		Hostname:   machine.Name,
+		Labels:     spec.Labels,
+		Metadata:   instanceMetadata,
+		ZoneId:     spec.ZoneID,
+		PlatformId: spec.PlatformID,
+		ResourcesSpec: &compute.ResourcesSpec{
+			Memory:       spec.ResourcesSpec.Memory,
+			Cores:        spec.ResourcesSpec.Cores,
+			CoreFraction: spec.ResourcesSpec.CoreFraction,
+			Gpus:         spec.ResourcesSpec.GPUs,
+		},
+		BootDiskSpec: &compute.AttachedDiskSpec{
+			Mode:       compute.AttachedDiskSpec_READ_WRITE,
+			AutoDelete: spec.BootDiskSpec.AutoDelete,
+			Disk: &compute.AttachedDiskSpec_DiskSpec_{
+				DiskSpec: &compute.AttachedDiskSpec_DiskSpec{
+					TypeId: spec.BootDiskSpec.TypeID,
+					Size:   spec.BootDiskSpec.Size,
+					Source: &compute.AttachedDiskSpec_DiskSpec_ImageId{
+						ImageId: spec.BootDiskSpec.ImageID,
+					},
+				},
+			},
+		},
+		NetworkInterfaceSpecs: networkInterfaceSpecs,
+		SchedulingPolicy: &compute.SchedulingPolicy{
+			Preemptible: spec.SchedulingPolicy.Preemptible,
+		},
+	}
+
+	result, _, err := waitForResult(ctx, ySDK, func() (*operation.Operation, error) {
+		return ySDK.Compute().Instance().Create(ctx, createInstanceParams)
+	})
+	if err != nil {
+		return nil, mcmstatus.Error(mcmcodes.InvalidArgument, err.Error())
+	}
+
+	newInstance, ok := result.(*compute.Instance)
+	if !ok {
+		return nil, mcmstatus.Error(mcmcodes.Internal, fmt.Sprintf("Yandex.Cloud API returned %q instead of \"*compute.Instance\". That shouldn't happen", reflect.TypeOf(result).String()))
+	}
+
+	return &driver.CreateMachineResponse{ProviderID: encodeMachineID(newInstance.ZoneId, newInstance.Name), NodeName: machine.Name}, nil
 }
 
 // DeleteMachine handles a machine deletion request
@@ -81,7 +195,36 @@ func (p *Provider) DeleteMachine(ctx context.Context, req *driver.DeleteMachineR
 	klog.V(2).Infof("Machine deletion request has been recieved for %q", req.Machine.Name)
 	defer klog.V(2).Infof("Machine deletion request has been processed for %q", req.Machine.Name)
 
-	return &driver.DeleteMachineResponse{}, status.Error(codes.Unimplemented, "")
+	var (
+		machine = req.Machine
+		secret  = req.Secret
+	)
+
+	ctx, cancelFunc := context.WithTimeout(context.Background(), apiTimeout)
+	defer cancelFunc()
+
+	ySDK, err := p.YandexSDK.GetSession(ctx, secret)
+	if err != nil {
+		return nil, mcmstatus.Error(mcmcodes.Internal, err.Error())
+	}
+	_, instanceID, err := decodeMachineID(machine.Spec.ProviderID)
+	if err != nil {
+		return nil, mcmstatus.Error(mcmcodes.InvalidArgument, err.Error())
+	}
+
+	_, _, err = waitForResult(ctx, ySDK, func() (*operation.Operation, error) {
+		return ySDK.Compute().Instance().Delete(ctx, &compute.DeleteInstanceRequest{InstanceId: instanceID})
+	})
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			klog.V(2).Infof("No Instance matching the ID %q found on the provider: %s", instanceID, err)
+			return &driver.DeleteMachineResponse{}, nil
+		} else {
+			return nil, mcmstatus.Error(mcmcodes.Internal, err.Error())
+		}
+	}
+
+	return &driver.DeleteMachineResponse{}, nil
 }
 
 // GetMachineStatus handles a machine get status request
@@ -105,7 +248,31 @@ func (p *Provider) GetMachineStatus(ctx context.Context, req *driver.GetMachineS
 	klog.V(2).Infof("Get request has been recieved for %q", req.Machine.Name)
 	defer klog.V(2).Infof("Machine get request has been processed successfully for %q", req.Machine.Name)
 
-	return &driver.GetMachineStatusResponse{}, status.Error(codes.Unimplemented, "")
+	var (
+		machine = req.Machine
+		secret  = req.Secret
+	)
+
+	ctx, cancelFunc := context.WithTimeout(context.Background(), apiTimeout)
+	defer cancelFunc()
+
+	ySDK, err := p.YandexSDK.GetSession(ctx, secret)
+	if err != nil {
+		return nil, mcmstatus.Error(mcmcodes.Internal, err.Error())
+	}
+	_, instanceID, err := decodeMachineID(machine.Spec.ProviderID)
+	if err != nil {
+		return nil, mcmstatus.Error(mcmcodes.InvalidArgument, err.Error())
+	}
+
+	_, err = ySDK.Compute().Instance().Get(ctx, &compute.GetInstanceRequest{InstanceId: instanceID})
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil, mcmstatus.Error(mcmcodes.NotFound, err.Error())
+		}
+	}
+
+	return nil, nil
 }
 
 // ListMachines lists all the machines possibilly created by a providerSpec
@@ -126,7 +293,72 @@ func (p *Provider) ListMachines(ctx context.Context, req *driver.ListMachinesReq
 	klog.V(2).Infof("List machines request has been recieved for %q", req.MachineClass.Name)
 	defer klog.V(2).Infof("List machines request has been recieved for %q", req.MachineClass.Name)
 
-	return &driver.ListMachinesResponse{}, status.Error(codes.Unimplemented, "")
+	var (
+		machineClass = req.MachineClass
+		secret       = req.Secret
+		folderID     = string(secret.Data[api.YandexFolderID])
+	)
+
+	ctx, cancelFunc := context.WithTimeout(context.Background(), apiTimeout)
+	defer cancelFunc()
+
+	ySDK, err := p.YandexSDK.GetSession(ctx, secret)
+	if err != nil {
+		return nil, mcmstatus.Error(mcmcodes.Internal, err.Error())
+	}
+
+	listOfVMs := make(map[string]string)
+
+	clusterName := ""
+	nodeRole := ""
+
+	for key := range machineClass.Labels {
+		if strings.Contains(key, "kubernetes-io-cluster-") {
+			clusterName = key
+		} else if strings.Contains(key, "kubernetes-io-role-") {
+			nodeRole = key
+		}
+	}
+
+	if clusterName == "" || nodeRole == "" {
+		return nil, mcmstatus.Error(mcmcodes.InvalidArgument, fmt.Sprintf(`no "kubernetes-io-cluster" or "kubernetes-io-role-" labels found in the MachineClass %s/%s`,
+			machineClass.Namespace, machineClass.Name))
+	}
+
+	// TODO: Replace this abomination with something more Go-like
+	var instances []*compute.Instance
+	instanceIterator := ySDK.Compute().Instance().InstanceIterator(ctx, folderID)
+instanceIteration:
+	for {
+		next := instanceIterator.Next()
+		switch next {
+		case true:
+			instances = append(instances, instanceIterator.Value())
+		case false:
+			break instanceIteration
+		}
+	}
+	if instanceIterator.Error() != nil {
+		return nil, mcmstatus.Error(mcmcodes.Internal, fmt.Sprintf("could not list instances for FolderID %q: %s", folderID, instanceIterator.Error()))
+	}
+
+	for _, instance := range instances {
+		matchedCluster := false
+		matchedRole := false
+		for label := range instance.Labels {
+			switch label {
+			case clusterName:
+				matchedCluster = true
+			case nodeRole:
+				matchedRole = true
+			}
+		}
+		if matchedCluster && matchedRole {
+			listOfVMs[encodeMachineID(instance.ZoneId, instance.Name)] = instance.Name
+		}
+	}
+
+	return &driver.ListMachinesResponse{MachineList: listOfVMs}, nil
 }
 
 // GetVolumeIDs returns a list of Volume IDs for all PV Specs for whom an provider volume was found
@@ -137,12 +369,24 @@ func (p *Provider) ListMachines(ctx context.Context, req *driver.ListMachinesReq
 // RESPONSE PARAMETERS (driver.GetVolumeIDsResponse)
 // VolumeIDs             []string                             VolumeIDs is a repeated list of VolumeIDs.
 //
-func (p *Provider) GetVolumeIDs(ctx context.Context, req *driver.GetVolumeIDsRequest) (*driver.GetVolumeIDsResponse, error) {
+func (p *Provider) GetVolumeIDs(_ context.Context, req *driver.GetVolumeIDsRequest) (*driver.GetVolumeIDsResponse, error) {
 	// Log messages to track start and end of request
 	klog.V(2).Infof("GetVolumeIDs request has been recieved for %q", req.PVSpecs)
 	defer klog.V(2).Infof("GetVolumeIDs request has been processed successfully for %q", req.PVSpecs)
 
-	return &driver.GetVolumeIDsResponse{}, status.Error(codes.Unimplemented, "")
+	var ids []string
+	for _, spec := range req.PVSpecs {
+		if spec.CSI == nil {
+			// Not a CSI-managed volume
+			continue
+		}
+		if spec.CSI.Driver != "yandex.csi.flant.com" {
+			// Not a volume provisioned by Yandex.Cloud CSI driver
+			continue
+		}
+		ids = append(ids, spec.CSI.VolumeHandle)
+	}
+	return &driver.GetVolumeIDsResponse{VolumeIDs: ids}, nil
 }
 
 // GenerateMachineClassForMigration helps in migration of one kind of machineClass CR to another kind.
@@ -164,10 +408,65 @@ func (p *Provider) GetVolumeIDs(ctx context.Context, req *driver.GetVolumeIDsReq
 // RESPONSE PARAMETERS (driver.GenerateMachineClassForMigration)
 // NONE
 //
-func (p *Provider) GenerateMachineClassForMigration(ctx context.Context, req *driver.GenerateMachineClassForMigrationRequest) (*driver.GenerateMachineClassForMigrationResponse, error) {
+func (p *Provider) GenerateMachineClassForMigration(_ context.Context, req *driver.GenerateMachineClassForMigrationRequest) (*driver.GenerateMachineClassForMigrationResponse, error) {
 	// Log messages to track start and end of request
 	klog.V(2).Infof("MigrateMachineClass request has been recieved for %q", req.ClassSpec)
 	defer klog.V(2).Infof("MigrateMachineClass request has been processed successfully for %q", req.ClassSpec)
 
 	return &driver.GenerateMachineClassForMigrationResponse{}, status.Error(codes.Unimplemented, "")
+}
+
+// FindInstanceByFolderAndName searches for Instance with the specified folderID and instanceName.
+func FindInstanceByFolderAndName(ctx context.Context, sdk *ycsdk.SDK, folderID string, instanceName string) (*compute.Instance, error) {
+	result, err := sdk.Compute().Instance().List(ctx, &compute.ListInstancesRequest{
+		FolderId: folderID,
+		Filter:   fmt.Sprintf("name = \"%s\"", instanceName),
+		PageSize: 2,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(result.Instances) > 1 {
+		return nil, fmt.Errorf("multiple instances found: folderID=%s, instanceName=%s", folderID, instanceName)
+	}
+
+	if result == nil || len(result.Instances) == 0 {
+		return nil, nil
+	}
+
+	return result.Instances[0], nil
+}
+
+func encodeMachineID(zone, machineID string) string {
+	return fmt.Sprintf("yandex://%s/%s", zone, machineID)
+}
+
+var regExpProviderID = regexp.MustCompile(`^yandex://([^/]+)/([^/]+)$`)
+
+func decodeMachineID(machineID string) (string, string, error) {
+	matches := regExpProviderID.FindStringSubmatch(machineID)
+	if len(matches) != 3 {
+		return "", "", fmt.Errorf("unexpected providerID: %s", machineID)
+	}
+
+	return matches[1], matches[2], nil
+}
+func waitForResult(ctx context.Context, sdk *ycsdk.SDK, origFunc func() (*operation.Operation, error)) (proto.Message, *ycsdkoperation.Operation, error) {
+	op, err := sdk.WrapOperation(origFunc())
+	if err != nil {
+		return nil, nil, err
+	}
+
+	err = op.Wait(ctx)
+	if err != nil {
+		return nil, op, err
+	}
+
+	resp, err := op.Response()
+	if err != nil {
+		return nil, op, err
+	}
+
+	return resp, op, nil
 }

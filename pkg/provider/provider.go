@@ -18,19 +18,17 @@ limitations under the License.
 package provider
 
 import (
-	"github.com/gardener/machine-controller-manager-provider-sampleprovider/pkg/spi"
+	"github.com/flant/machine-controller-manager-provider-yandex/pkg/spi"
 	"github.com/gardener/machine-controller-manager/pkg/util/provider/driver"
 )
 
-// Provider is the struct that implements the driver interface
-// It is used to implement the basic driver functionalities
 type Provider struct {
-	SPI spi.SessionProviderInterface
+	YandexSDK *spi.YandexSessionStore
 }
 
 // NewProvider returns an empty provider object
-func NewProvider(spi spi.SessionProviderInterface) driver.Driver {
+func NewProvider() driver.Driver {
 	return &Provider{
-		SPI: spi,
+		YandexSDK: spi.NewYandexSession(),
 	}
 }

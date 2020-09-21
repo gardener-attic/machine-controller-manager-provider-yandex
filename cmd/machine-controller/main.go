@@ -25,8 +25,7 @@ import (
 	"fmt"
 	"os"
 
-	cp "github.com/gardener/machine-controller-manager-provider-sampleprovider/pkg/provider"
-	"github.com/gardener/machine-controller-manager-provider-sampleprovider/pkg/spi"
+	cp "github.com/flant/machine-controller-manager-provider-yandex/pkg/provider"
 	_ "github.com/gardener/machine-controller-manager/pkg/util/client/metrics/prometheus" // for client metric registration
 	"github.com/gardener/machine-controller-manager/pkg/util/provider/app"
 	"github.com/gardener/machine-controller-manager/pkg/util/provider/app/options"
@@ -38,7 +37,6 @@ import (
 )
 
 func main() {
-
 	s := options.NewMCServer()
 	s.AddFlags(pflag.CommandLine)
 
@@ -46,11 +44,10 @@ func main() {
 	logs.InitLogs()
 	defer logs.FlushLogs()
 
-	provider := cp.NewProvider(&spi.PluginSPIImpl{})
+	provider := cp.NewProvider()
 
 	if err := app.Run(s, provider); err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
-
 }
