@@ -1,0 +1,40 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Gardener machine-controller-manager-provider-yandex
+Upstream-Contact: The Gardener project <gardener@googlegroups.com>
+Source: https://github.com/gardener/machine-controller-manager-provider-yandex
+Comment: The current seed source code is derived from the Machine Controller Manager
+  sampleprovider repo under the Gardener project.
+  .
+  Machine Controller Manager Sample Provider
+  Copyright 2020 SAP SE or an SAP affiliate company and Gardener contributors
+  https://github.com/gardener/machine-controller-manager-provider-sampleprovider
+  https://github.com/gardener/machine-controller-manager-provider-sampleprovider/blob/master/LICENSE.md
+  .
+  This project however is inturn derived from several smaller kubernetes/kubernetes
+  pieces. Refer [here](https://github.com/gardener/machine-controller-manager-provider-sampleprovider/blob/master/NOTICE.md)
+
+# --------------------------------------------------
+# source code
+
+Files:
+  .github/*
+  .gitignore
+  CODEOWNERS
+  go.mod
+  go.sum
+  VERSION
+Copyright: 2020 SAP SE or an SAP affiliate company and Gardener contributors
+License: Apache-2.0
+
+# --------------------------------------------------
+# documentation
+
+Files:
+  CONTRIBUTING.md
+  README.md
+Copyright: 2020 SAP SE or an SAP affiliate company and Gardener contributors
+License: CC-BY-4.0
+
+# --------------------------------------------------
+# source dependencies
+
