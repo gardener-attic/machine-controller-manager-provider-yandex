@@ -165,7 +165,7 @@ func (p *Provider) CreateMachine(ctx context.Context, req *driver.CreateMachineR
 		return nil, mcmstatus.Error(mcmcodes.Internal, fmt.Sprintf("Yandex.Cloud API returned %q instead of \"*compute.Instance\". That shouldn't happen", reflect.TypeOf(result).String()))
 	}
 
-	return &driver.CreateMachineResponse{ProviderID: encodeMachineID(newInstance.ZoneId, newInstance.Name), NodeName: machine.Name}, nil
+	return &driver.CreateMachineResponse{ProviderID: encodeMachineID(newInstance.Id), NodeName: machine.Name}, nil
 }
 
 // DeleteMachine handles a machine deletion request
@@ -185,8 +185,9 @@ func (p *Provider) DeleteMachine(ctx context.Context, req *driver.DeleteMachineR
 	defer klog.V(2).Infof("Machine deletion request has been processed for %q", req.Machine.Name)
 
 	var (
-		machine = req.Machine
-		secret  = req.Secret
+		machine  = req.Machine
+		secret   = req.Secret
+		folderID = string(secret.Data[api.YandexFolderID])
 	)
 
 	ctx, cancelFunc := context.WithTimeout(context.Background(), apiTimeout)
@@ -196,7 +197,7 @@ func (p *Provider) DeleteMachine(ctx context.Context, req *driver.DeleteMachineR
 	if err != nil {
 		return nil, mcmstatus.Error(mcmcodes.Internal, err.Error())
 	}
-	_, instanceID, err := decodeMachineID(machine.Spec.ProviderID)
+	instanceID, err := decodeMachineID(ctx, ySDK, folderID, machine.Spec.ProviderID)
 	if err != nil {
 		return nil, mcmstatus.Error(mcmcodes.InvalidArgument, err.Error())
 	}
@@ -238,8 +239,9 @@ func (p *Provider) GetMachineStatus(ctx context.Context, req *driver.GetMachineS
 	defer klog.V(2).Infof("Machine get request has been processed successfully for %q", req.Machine.Name)
 
 	var (
-		machine = req.Machine
-		secret  = req.Secret
+		machine  = req.Machine
+		secret   = req.Secret
+		folderID = string(secret.Data[api.YandexFolderID])
 	)
 
 	ctx, cancelFunc := context.WithTimeout(context.Background(), apiTimeout)
@@ -249,7 +251,7 @@ func (p *Provider) GetMachineStatus(ctx context.Context, req *driver.GetMachineS
 	if err != nil {
 		return nil, mcmstatus.Error(mcmcodes.Internal, err.Error())
 	}
-	_, instanceID, err := decodeMachineID(machine.Spec.ProviderID)
+	instanceID, err := decodeMachineID(ctx, ySDK, folderID, machine.Spec.ProviderID)
 	if err != nil {
 		return nil, mcmstatus.Error(mcmcodes.InvalidArgument, err.Error())
 	}
@@ -343,7 +345,7 @@ instanceIteration:
 			}
 		}
 		if matchedCluster && matchedRole {
-			listOfVMs[encodeMachineID(instance.ZoneId, instance.Name)] = instance.Name
+			listOfVMs[encodeMachineID(instance.Id)] = instance.Name
 		}
 	}
 
@@ -369,8 +371,8 @@ func (p *Provider) GetVolumeIDs(_ context.Context, req *driver.GetVolumeIDsReque
 			// Not a CSI-managed volume
 			continue
 		}
-		if spec.CSI.Driver != "yandex.csi.flant.com" {
-			// Not a volume provisioned by Yandex.Cloud CSI driver
+		if spec.CSI.Driver != "yandex.csi.flant.com" && spec.CSI.Driver != "disk-csi-driver.mks.ycloud.io" {
+			// Not a volume provisioned by Flant's Yandex.Cloud CSI driver or Yandex.Cloud Managed Kubernetes
 			continue
 		}
 		ids = append(ids, spec.CSI.VolumeHandle)
@@ -427,19 +429,32 @@ func FindInstanceByFolderAndName(ctx context.Context, sdk *ycsdk.SDK, folderID s
 	return result.Instances[0], nil
 }
 
-func encodeMachineID(zone, machineID string) string {
-	return fmt.Sprintf("yandex://%s/%s", zone, machineID)
+func encodeMachineID(machineID string) string {
+	return fmt.Sprintf("yandex://%s", machineID)
 }
 
-var regExpProviderID = regexp.MustCompile(`^yandex://([^/]+)/([^/]+)$`)
+var (
+	deprecatedRegExpProviderID = regexp.MustCompile(`^yandex://([^/]+)/([^/]+)/([^/]+)$`)
+	regExpProviderID           = regexp.MustCompile(`^yandex://(.+)$`)
+)
 
-func decodeMachineID(machineID string) (string, string, error) {
-	matches := regExpProviderID.FindStringSubmatch(machineID)
-	if len(matches) != 3 {
-		return "", "", fmt.Errorf("unexpected providerID: %s", machineID)
+func decodeMachineID(ctx context.Context, sdk *ycsdk.SDK, folderID string, providerID string) (string, error) {
+	matches := deprecatedRegExpProviderID.FindStringSubmatch(providerID)
+	if len(matches) == 4 {
+		instance, err := FindInstanceByFolderAndName(ctx, sdk, folderID, matches[3])
+		if err != nil {
+			return "", err
+		}
+
+		return instance.Id, nil
 	}
 
-	return matches[1], matches[2], nil
+	matches = regExpProviderID.FindStringSubmatch(providerID)
+	if len(matches) == 2 {
+		return matches[1], nil
+	}
+
+	return "", fmt.Errorf("invalid MachineID %q", providerID)
 }
 func waitForResult(ctx context.Context, sdk *ycsdk.SDK, origFunc func() (*operation.Operation, error)) (proto.Message, *ycsdkoperation.Operation, error) {
 	op, err := sdk.WrapOperation(origFunc())
