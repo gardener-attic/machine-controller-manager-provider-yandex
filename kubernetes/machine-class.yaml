@@ -12,3 +12,4 @@ providerSpec:
 secretRef: # If required
   name: test-secret
   namespace: default # Namespace where the controller would watch
+provider: "Yandex"

@@ -33,6 +33,9 @@ import (
 
 const (
 	apiTimeout = 10 * time.Minute
+
+	// ProviderYandex represents the cloud provider for the MachineClass for this controller
+	ProviderYandex = "Yandex"
 )
 
 // NOTE
@@ -70,6 +73,12 @@ func (p *Provider) CreateMachine(ctx context.Context, req *driver.CreateMachineR
 	// Log messages to track request
 	klog.V(2).Infof("Machine creation request has been recieved for %q", req.Machine.Name)
 	defer klog.V(2).Infof("Machine creation request has been processed for %q", req.Machine.Name)
+
+	// Check if the MachineClass is for the supported cloud provider
+	if req.MachineClass.Provider != ProviderYandex {
+		err := fmt.Errorf("Requested for Provider '%s', we only support '%s'", req.MachineClass.Provider, ProviderYandex)
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	var (
 		machine      = req.Machine
@@ -184,6 +193,12 @@ func (p *Provider) DeleteMachine(ctx context.Context, req *driver.DeleteMachineR
 	klog.V(2).Infof("Machine deletion request has been recieved for %q", req.Machine.Name)
 	defer klog.V(2).Infof("Machine deletion request has been processed for %q", req.Machine.Name)
 
+	// Check if the MachineClass is for the supported cloud provider
+	if req.MachineClass.Provider != ProviderYandex {
+		err := fmt.Errorf("Requested for Provider '%s', we only support '%s'", req.MachineClass.Provider, ProviderYandex)
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	var (
 		machine = req.Machine
 		secret  = req.Secret
@@ -237,6 +252,12 @@ func (p *Provider) GetMachineStatus(ctx context.Context, req *driver.GetMachineS
 	klog.V(2).Infof("Get request has been recieved for %q", req.Machine.Name)
 	defer klog.V(2).Infof("Machine get request has been processed successfully for %q", req.Machine.Name)
 
+	// Check if the MachineClass is for the supported cloud provider
+	if req.MachineClass.Provider != ProviderYandex {
+		err := fmt.Errorf("Requested for Provider '%s', we only support '%s'", req.MachineClass.Provider, ProviderYandex)
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	var (
 		machine = req.Machine
 		secret  = req.Secret
@@ -281,6 +302,12 @@ func (p *Provider) ListMachines(ctx context.Context, req *driver.ListMachinesReq
 	// Log messages to track start and end of request
 	klog.V(2).Infof("List machines request has been recieved for %q", req.MachineClass.Name)
 	defer klog.V(2).Infof("List machines request has been recieved for %q", req.MachineClass.Name)
+
+	// Check if the MachineClass is for the supported cloud provider
+	if req.MachineClass.Provider != ProviderYandex {
+		err := fmt.Errorf("Requested for Provider '%s', we only support '%s'", req.MachineClass.Provider, ProviderYandex)
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	var (
 		machineClass = req.MachineClass
