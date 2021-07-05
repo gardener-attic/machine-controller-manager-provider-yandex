@@ -165,7 +165,7 @@ func (p *Provider) CreateMachine(ctx context.Context, req *driver.CreateMachineR
 		return nil, mcmstatus.Error(mcmcodes.Internal, fmt.Sprintf("Yandex.Cloud API returned %q instead of \"*compute.Instance\". That shouldn't happen", reflect.TypeOf(result).String()))
 	}
 
-	return &driver.CreateMachineResponse{ProviderID: encodeMachineID(newInstance.ZoneId, newInstance.Name), NodeName: machine.Name}, nil
+	return &driver.CreateMachineResponse{ProviderID: encodeMachineID(newInstance.ZoneId, newInstance.Id), NodeName: machine.Name}, nil
 }
 
 // DeleteMachine handles a machine deletion request
@@ -249,6 +249,9 @@ func (p *Provider) GetMachineStatus(ctx context.Context, req *driver.GetMachineS
 	if err != nil {
 		return nil, mcmstatus.Error(mcmcodes.Internal, err.Error())
 	}
+	if machine.Spec.ProviderID == "" {
+		return nil, mcmstatus.Error(mcmcodes.NotFound, "providerID field is empty")
+	}
 	_, instanceID, err := decodeMachineID(machine.Spec.ProviderID)
 	if err != nil {
 		return nil, mcmstatus.Error(mcmcodes.InvalidArgument, err.Error())
@@ -261,7 +264,7 @@ func (p *Provider) GetMachineStatus(ctx context.Context, req *driver.GetMachineS
 		}
 	}
 
-	return nil, nil
+	return &driver.GetMachineStatusResponse{ProviderID: machine.Spec.ProviderID, NodeName: machine.Name}, nil
 }
 
 // ListMachines lists all the machines possibilly created by a providerSpec

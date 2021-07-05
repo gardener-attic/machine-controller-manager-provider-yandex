@@ -3,7 +3,7 @@ module github.com/flant/machine-controller-manager-provider-yandex
 go 1.15
 
 require (
-	github.com/gardener/machine-controller-manager v0.34.0
+	github.com/gardener/machine-controller-manager v0.39.0
 	github.com/gogo/protobuf v1.2.2-0.20190723190241-65acae22fc9d
 	github.com/golang/protobuf v1.4.2 // indirect
 	github.com/hashicorp/go-multierror v1.1.0 // indirect
@@ -28,7 +28,6 @@ require (
 )
 
 replace (
-	github.com/gardener/machine-controller-manager => github.com/gardener/machine-controller-manager v0.33.1-0.20200828071210-90f8b67cc5e6
 	github.com/onsi/gomega => github.com/onsi/gomega v1.5.0
 	github.com/prometheus/client_golang => github.com/prometheus/client_golang v0.9.2
 	k8s.io/api => k8s.io/api v0.0.0-20190918155943-95b840bb6a1f // kubernetes-1.16.0
