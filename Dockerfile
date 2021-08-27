@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 #############      builder                                  #############
-FROM golang:1.13.5 AS builder
+FROM golang:1.15.13 AS builder
 
 WORKDIR /go/src/github.com/flant/machine-controller-manager-provider-yandex
+COPY go.mod go.sum ./
+RUN go mod download -x
 COPY . .
-
-RUN .ci/build
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GO111MODULE=on go build -o bin/rel/machine-controller cmd/machine-controller/main.go
 
 #############      base                                     #############
 FROM alpine:3.11.2 as base
