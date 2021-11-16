@@ -45,8 +45,9 @@ type YandexProviderSpecBootDiskSpec struct {
 }
 
 type YandexProviderSpecNetworkInterfaceSpecs struct {
-	SubnetID              string `json:"subnetID,omitempty"`
-	AssignPublicIPAddress bool   `json:"assignPublicIPAddress,omitempty"`
+	SubnetID              string   `json:"subnetID,omitempty"`
+	AssignPublicIPAddress bool     `json:"assignPublicIPAddress,omitempty"`
+	PublicIPAddresses     []string `json:"publicIPAddresses,omitempty"`
 }
 
 type YandexProviderSpecSchedulingPolicy struct {

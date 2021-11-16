@@ -8,6 +8,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -24,6 +25,7 @@ import (
 	api "github.com/flant/machine-controller-manager-provider-yandex/pkg/provider/apis"
 	"github.com/yandex-cloud/go-genproto/yandex/cloud/compute/v1"
 	"github.com/yandex-cloud/go-genproto/yandex/cloud/operation"
+	"github.com/yandex-cloud/go-genproto/yandex/cloud/vpc/v1"
 
 	"github.com/gardener/machine-controller-manager/pkg/util/provider/driver"
 	mcmcodes "github.com/gardener/machine-controller-manager/pkg/util/provider/machinecodes/codes"
@@ -101,12 +103,21 @@ func (p *Provider) CreateMachine(ctx context.Context, req *driver.CreateMachineR
 	}
 	instanceMetadata["user-data"] = string(userData)
 
+	folderId := string(secret.Data[api.YandexFolderID])
+
 	var networkInterfaceSpecs []*compute.NetworkInterfaceSpec
 	for _, netIf := range spec.NetworkInterfaceSpecs {
 		var natSpec *compute.OneToOneNatSpec
 		if netIf.AssignPublicIPAddress {
 			natSpec = &compute.OneToOneNatSpec{
 				IpVersion: compute.IpVersion_IPV4,
+			}
+
+			if len(netIf.PublicIPAddresses) > 0 {
+				natSpec.Address, err = findUnusedAddressFromListByFolder(ctx, ySDK, folderId, netIf.PublicIPAddresses)
+				if err != nil {
+					return nil, mcmstatus.Error(mcmcodes.NotFound, err.Error())
+				}
 			}
 		}
 
@@ -121,7 +132,7 @@ func (p *Provider) CreateMachine(ctx context.Context, req *driver.CreateMachineR
 	}
 
 	createInstanceParams := &compute.CreateInstanceRequest{
-		FolderId:   string(secret.Data[api.YandexFolderID]),
+		FolderId:   folderId,
 		Name:       machine.Name,
 		Hostname:   machine.Name,
 		Labels:     spec.Labels,
@@ -430,6 +441,32 @@ func FindInstanceByFolderAndName(ctx context.Context, sdk *ycsdk.SDK, folderID s
 	return result.Instances[0], nil
 }
 
+func findUnusedAddressFromListByFolder(ctx context.Context, sdk *ycsdk.SDK, folderID string, addresses []string) (string, error) {
+	result, err := sdk.VPC().Address().List(ctx, &vpc.ListAddressesRequest{
+		FolderId: folderID,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	for _, item := range result.Addresses {
+		if !item.GetUsed() {
+			external := item.GetExternalIpv4Address().GetAddress()
+			if external == "" {
+				continue
+			}
+
+			for _, address := range addresses {
+				if external == address {
+					return external, nil
+				}
+			}
+		}
+	}
+
+	return "", errors.New("unused external ip address not found")
+}
+
 func encodeMachineID(zone, machineID string) string {
 	return fmt.Sprintf("yandex://%s/%s", zone, machineID)
 }
@@ -444,6 +481,7 @@ func decodeMachineID(machineID string) (string, string, error) {
 
 	return matches[1], matches[2], nil
 }
+
 func waitForResult(ctx context.Context, sdk *ycsdk.SDK, origFunc func() (*operation.Operation, error)) (proto.Message, *ycsdkoperation.Operation, error) {
 	op, err := sdk.WrapOperation(origFunc())
 	if err != nil {
