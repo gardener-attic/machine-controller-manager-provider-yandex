@@ -4,17 +4,15 @@ go 1.15
 
 require (
 	github.com/gardener/machine-controller-manager v0.39.0
-	github.com/gogo/protobuf v1.2.2-0.20190723190241-65acae22fc9d
+	github.com/gogo/protobuf v1.3.2
 	github.com/golang/protobuf v1.4.2 // indirect
 	github.com/hashicorp/go-multierror v1.1.0 // indirect
 	github.com/onsi/ginkgo v1.15.2
 	github.com/onsi/gomega v1.11.0
 	github.com/prometheus/client_golang v1.5.1 // indirect
 	github.com/spf13/pflag v1.0.5
-	github.com/stretchr/testify v1.5.1 // indirect
 	github.com/yandex-cloud/go-genproto v0.0.0-20200915125933-33de72a328bd
 	github.com/yandex-cloud/go-sdk v0.0.0-20200907161610-7a8dbbbabad4
-	golang.org/x/text v0.3.3 // indirect
 	google.golang.org/genproto v0.0.0-20200918140846-d0d605568037 // indirect
 	google.golang.org/grpc v1.32.0
 	google.golang.org/protobuf v1.25.0 // indirect
